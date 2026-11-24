@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Attention-based networks for FermiNet."""
+"""Attention-based networks for BoseNet, with parameter conditioning."""
 
 from typing import Mapping, Optional, Sequence, Tuple, Union
 
@@ -22,6 +22,7 @@ from ferminet import envelopes
 from ferminet import jastrows
 from ferminet import network_blocks
 from ferminet import networks
+from ferminet import smooth_jastrow
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -45,6 +46,10 @@ class PsiformerOptions(networks.BaseNetworkOptions):
   heads_dim: int = 64
   mlp_hidden_dims: Tuple[int, ...] = (256,)
   use_layer_norm: bool = False
+  # Lambda conditioning: 'additive', 'film', or 'none'
+  lambda_conditioning_mode: str = 'additive'
+  # If True, feed log(lambda) to the embedding MLP
+  lambda_log_scale_input: bool = False
 
 
 def make_layer_norm() ->...:
@@ -224,12 +229,99 @@ def make_self_attention_block(num_layers: int,
   return init, apply
 
 
+# ── Lambda conditioning modules ──────────────────────────────────────────
+
+
+def make_lambda_embedding(attn_dim: int, hidden_dim: int = 64) -> ...:
+  """Creates an MLP that maps scalar lambda to an attn_dim-sized token.
+
+  Architecture: scalar -> (1,) -> Linear -> tanh -> Linear -> (attn_dim,)
+  """
+  def init(key: chex.PRNGKey) -> Sequence[networks.Param]:
+    params = []
+    key, subkey = jax.random.split(key)
+    params.append(network_blocks.init_linear_layer(
+        subkey, in_dim=1, out_dim=hidden_dim, include_bias=True))
+    key, subkey = jax.random.split(key)
+    params.append(network_blocks.init_linear_layer(
+        subkey, in_dim=hidden_dim, out_dim=attn_dim, include_bias=True))
+    return params
+
+  def apply(params: Sequence[networks.Param],
+            interaction_strength: jnp.ndarray) -> jnp.ndarray:
+    """Maps scalar interaction_strength to a parameter token of size attn_dim."""
+    x = jnp.atleast_1d(jnp.asarray(interaction_strength, dtype=jnp.float32))
+    x = jnp.tanh(network_blocks.linear_layer(x, **params[0]))
+    x = network_blocks.linear_layer(x, **params[1])
+    return x  # (attn_dim,)
+
+  return init, apply
+
+
+def make_cross_attention(attn_dim: int, mode: str = 'additive') -> ...:
+  """Cross-attention that injects the parameter token into site tokens.
+
+  Args:
+    attn_dim: dimension of site tokens.
+    mode: 'additive' — x + tanh(Linear(p_lambda))
+          'film' — gamma(p_lambda) * x + beta(p_lambda)  (FiLM conditioning)
+  """
+  def init(key: chex.PRNGKey) -> networks.ParamTree:
+    params = {}
+    if mode == 'film':
+      key, subkey = jax.random.split(key)
+      params['gamma'] = network_blocks.init_linear_layer(
+          subkey, in_dim=attn_dim, out_dim=attn_dim, include_bias=True)
+      key, subkey = jax.random.split(key)
+      params['beta'] = network_blocks.init_linear_layer(
+          subkey, in_dim=attn_dim, out_dim=attn_dim, include_bias=True)
+    else:
+      key, subkey = jax.random.split(key)
+      params['project'] = network_blocks.init_linear_layer(
+          subkey, in_dim=attn_dim, out_dim=attn_dim, include_bias=True)
+    return params
+
+  def apply(params: networks.ParamTree,
+            x: jnp.ndarray,
+            p_lambda: jnp.ndarray) -> jnp.ndarray:
+    """Injects lambda-dependent modulation into all site tokens.
+
+    Args:
+      x: site tokens, shape (nelectrons, attn_dim).
+      p_lambda: parameter token, shape (attn_dim,).
+
+    Returns:
+      Modulated site tokens, shape (nelectrons, attn_dim).
+    """
+    if mode == 'film':
+      gamma = 1.0 + jnp.tanh(network_blocks.linear_layer(
+          p_lambda, **params['gamma']))
+      beta = jnp.tanh(network_blocks.linear_layer(
+          p_lambda, **params['beta']))
+      return gamma * x + beta  # broadcast to (nelectrons, attn_dim)
+    else:
+      ca_bias = jnp.tanh(network_blocks.linear_layer(
+          p_lambda, **params['project']))
+      return x + ca_bias  # broadcast to (nelectrons, attn_dim)
+
+  return init, apply
+
+
+# ── Psiformer layers with lambda conditioning ────────────────────────────
+
+
 def make_psiformer_layers(
     nspins: Tuple[int, ...],
     natoms: int,
     options: PsiformerOptions,
 ) -> Tuple[networks.InitLayersFn, networks.ApplyLayersFn]:
   """Creates the permutation-equivariant layers for the Psiformer.
+
+  Architecture — Per-Layer Cross-Attention (PLCA) conditioning:
+    Embed -> [SA -> CA(lambda)]_L -> out
+
+  Each self-attention layer is followed by a cross-attention injection of the
+  parameter token p_lambda, so lambda influences every layer of the network.
 
   Args:
     nspins: Tuple with number of spin up and spin down electrons.
@@ -241,15 +333,24 @@ def make_psiformer_layers(
   """
   del nspins, natoms  # Unused.
 
-  # Attention network.
   attn_dim = options.num_heads * options.heads_dim
-  self_attn_init, self_attn_apply = make_self_attention_block(
-      num_layers=options.num_layers,
-      num_heads=options.num_heads,
-      heads_dim=options.heads_dim,
-      mlp_hidden_dims=options.mlp_hidden_dims,
-      use_layer_norm=options.use_layer_norm,
-  )
+  num_layers = options.num_layers
+
+  # Per-layer self-attention components.
+  attention_init, attention_apply = make_multi_head_attention(
+      options.num_heads, options.heads_dim)
+  if options.use_layer_norm:
+    layer_norm_init, layer_norm_apply = make_layer_norm()
+  mlp_init, mlp_apply = make_mlp()
+
+  # Lambda conditioning modules (shared embedding, per-layer CA).
+  conditioning = options.lambda_conditioning_mode != 'none'
+  if options.lambda_conditioning_mode not in ('additive', 'film', 'none'):
+    raise ValueError('lambda conditioning mode must be additive, film, or none')
+  log_scale = options.lambda_log_scale_input
+  lambda_embed_init, lambda_embed_apply = make_lambda_embedding(attn_dim)
+  cross_attn_init, cross_attn_apply = make_cross_attention(
+      attn_dim, mode=options.lambda_conditioning_mode)
 
   def init(key: chex.PRNGKey) -> Tuple[int, networks.ParamTree]:
     """Returns tuple of output dimension from the final layer and parameters."""
@@ -266,9 +367,31 @@ def make_psiformer_layers(
         subkey, in_dim=feature_dim, out_dim=attn_dim, include_bias=False
     )['w']
 
-    # Attention block params.
+    # Shared lambda embedding.
     key, subkey = jax.random.split(key)
-    params.update(self_attn_init(key, attn_dim))
+    if conditioning:
+      params['lambda_embed'] = lambda_embed_init(subkey)
+
+    # Per-layer params: SA + CA at every layer.
+    sa_params = []
+    ln_params = []
+    mlp_params = []
+    ca_params = []
+    for _ in range(num_layers):
+      key, attn_key, mlp_key, ca_key = jax.random.split(key, 4)
+      sa_params.append(attention_init(
+          attn_key, q_d=attn_dim, kv_d=attn_dim, output_channels=attn_dim))
+      if options.use_layer_norm:
+        ln_params.append([layer_norm_init(attn_dim), layer_norm_init(attn_dim)])
+      mlp_params.append(mlp_init(mlp_key, options.mlp_hidden_dims, attn_dim))
+      if conditioning:
+        ca_params.append(cross_attn_init(ca_key))
+
+    params['attention'] = sa_params
+    params['ln'] = ln_params
+    params['mlp'] = mlp_params
+    if conditioning:
+      params['cross_attn'] = ca_params
 
     return attn_dim, params
 
@@ -281,8 +404,11 @@ def make_psiformer_layers(
       r_ee: jnp.ndarray,
       spins: jnp.ndarray,
       charges: jnp.ndarray,
+      interaction_strength: jnp.ndarray = 0.0,
   ) -> jnp.ndarray:
     """Applies the Psiformer interaction layers to a walker configuration.
+
+    Architecture — PLCA: Embed -> [SA -> CA(lambda)]_L -> output
 
     Args:
       params: parameters for the interaction and permuation-equivariant layers.
@@ -292,6 +418,7 @@ def make_psiformer_layers(
       r_ee: electron-electron distances.
       spins: spin of each electron.
       charges: nuclear charges.
+      interaction_strength: scalar conditioning parameter lambda.
 
     Returns:
       Array of shape (nelectron, output_dim), where the output dimension,
@@ -314,7 +441,33 @@ def make_psiformer_layers(
     # Embed into attention dimension.
     x = jnp.dot(features, params['embed'])
 
-    return self_attn_apply(params, x)
+    # Embed scalar lambda into a parameter token (shared across layers).
+    lam = interaction_strength
+    if log_scale:
+      lam = jnp.log(jnp.maximum(lam, 1e-8))
+    if conditioning:
+      p_lambda = lambda_embed_apply(params['lambda_embed'], lam)
+
+    # ── Per-layer: SA -> CA(lambda) ──
+    for layer in range(num_layers):
+      # Self-attention + residual.
+      attn_output = attention_apply(
+          params['attention'][layer], x, x, x)
+      x = x + attn_output
+      if options.use_layer_norm:
+        x = layer_norm_apply(params['ln'][layer][0], x)
+
+      # MLP + residual.
+      mlp_output = mlp_apply(params['mlp'][layer], x)
+      x = x + mlp_output
+      if options.use_layer_norm:
+        x = layer_norm_apply(params['ln'][layer][1], x)
+
+      # Cross-attention injection of lambda.
+      if conditioning:
+        x = cross_attn_apply(params['cross_attn'][layer], x, p_lambda)
+
+    return x
 
   return init, apply
 
@@ -340,8 +493,13 @@ def make_fermi_net(
     use_layer_norm: bool,
     predict_logits: bool = False,
     boson_head: str = 'product',
+    lambda_conditioning_mode: str = 'additive',
+    lambda_log_scale_input: bool = False,
+    smooth_periodic_jastrow: bool = False,
+    smooth_periodic_jastrow_lattice: Optional[np.ndarray] = None,
+    smooth_periodic_jastrow_rmatch_frac: float = 1.0,
 ) -> networks.Network:
-  """Psiformer with stacked Self Attention layers.
+  """Psiformer with stacked Self Attention layers and lambda conditioning.
 
   Includes standard envelope and determinants.
 
@@ -405,7 +563,24 @@ def make_fermi_net(
       use_layer_norm=use_layer_norm,
       predict_logits=predict_logits,
       boson_head=boson_head,
+      lambda_conditioning_mode=lambda_conditioning_mode,
+      lambda_log_scale_input=lambda_log_scale_input,
   )  # pytype: disable=wrong-keyword-args
+
+  # Optional fixed smooth-periodic two-body Jastrow prefactor (FIX A). Built
+  # once here and captured by network_apply; adds log f_2 to log|psi| with each
+  # walker's own lambda. Non-trainable, strictly positive (sign unchanged).
+  if smooth_periodic_jastrow:
+    if smooth_periodic_jastrow_lattice is None:
+      raise ValueError(
+          'smooth_periodic_jastrow=True requires '
+          'smooth_periodic_jastrow_lattice (the PBC lattice).')
+    smooth_periodic_logJ = smooth_jastrow.make_smooth_periodic_log_jastrow(
+        lattice=smooth_periodic_jastrow_lattice,
+        ndim=ndim,
+        rmatch_frac=smooth_periodic_jastrow_rmatch_frac)
+  else:
+    smooth_periodic_logJ = None
 
   psiformer_layers = make_psiformer_layers(nspins, charges.shape[0], options)
 
@@ -425,6 +600,7 @@ def make_fermi_net(
       spins: jnp.ndarray,
       atoms: jnp.ndarray,
       charges: jnp.ndarray,
+      interaction_strength: jnp.ndarray = 0.0,
   ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Forward evaluation of the Psiformer.
 
@@ -434,34 +610,26 @@ def make_fermi_net(
       spins: The electron spins, an N dimensional vector.
       atoms: Array with positions of atoms.
       charges: Array with nuclear charges.
+      interaction_strength: scalar conditioning parameter lambda.
 
     Returns:
-      Output of antisymmetric neural network in log space, i.e. a tuple of sign
+      Output of neural network in log space, i.e. a tuple of sign
       of and log absolute value of the network evaluated at x.
     """
-    orbitals = orbitals_apply(params, pos, spins, atoms, charges)
-
-    # for bosons we don't need to antisymmetrize, we return the log of the product
-    # which is equivalent to the sum of logs
-
-    # if options.states:
-    #   batch_logdet_matmul = jax.vmap(network_blocks.logdet_matmul, in_axes=0)
-    #   orbitals = [
-    #       jnp.reshape(orbital, (options.states, -1) + orbital.shape[1:])
-    #       for orbital in orbitals
-    #   ]
-    #   result = batch_logdet_matmul(orbitals)
-    # else:
-    #   result = network_blocks.logdet_matmul(orbitals)
-    # if 'state_scale' in params:
-    #   # only used at inference time for excited states
-    #   result = result[0], result[1] + params['state_scale']
+    orbitals = orbitals_apply(
+        params, pos, spins, atoms, charges, interaction_strength)
 
     if options.boson_head == 'sum':
       result = network_blocks.logsum_matmul(orbitals)
     else:
       result = network_blocks.logproduct_matmul(
           orbitals, predict_logits=options.predict_logits)
+
+    # Fixed smooth-periodic two-body Jastrow: log psi += sum_{i<j} log f_2.
+    # Strictly positive, so only the log-magnitude changes, not the sign/phase.
+    if smooth_periodic_logJ is not None:
+      sign, logabs = result
+      result = (sign, logabs + smooth_periodic_logJ(pos, interaction_strength))
 
     return result
 

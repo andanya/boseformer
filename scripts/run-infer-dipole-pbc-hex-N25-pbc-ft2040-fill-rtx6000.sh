@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH --job-name=inf-25ft-fill
+#SBATCH --partition=gpu_rtx6000
+#SBATCH --gpus=rtx_pro_6000_blackwell:1
+#SBATCH --time=12:00:00
+#SBATCH --mem=140G
+#SBATCH --array=0-13%8
+#SBATCH --no-requeue
+#SBATCH --output=./run-infer-dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040/slurm_%A_%a.out
+#SBATCH --error=./run-infer-dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040/slurm_%A_%a.err
+cd /home/da753/bosenet || exit 1
+module load miniconda
+LAMBDAS=(0.1 0.5 1.0 2.0 5.0 10.0 15.0 31.0 33.0 35.0 45.0 50.0 65.0 80.0); LAM=${LAMBDAS[$SLURM_ARRAY_TASK_ID]}
+conda activate ferminet-jax
+echo "lambda=$LAM"; export XLA_FLAGS="--xla_gpu_autotune_level=0"
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python scripts/infer-dipole-pbc-hex-N25-pbc-ft2040.py $LAM

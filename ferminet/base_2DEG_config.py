@@ -6,6 +6,29 @@ import enum
 
 import ml_collections
 from ml_collections import config_dict
+import numpy as np
+
+
+def make_lattice(lattice_type: str, length: float, ndim: int = 2) -> np.ndarray:
+  """Returns real-space lattice vectors (as columns) for the requested lattice.
+
+  Args:
+    lattice_type: One of:
+      'square'    - L * I_ndim (standard cubic/square lattice).
+      'hexagonal' - 2D triangular real-space lattice (giving a hexagonal BZ).
+                    Both primitive vectors have length `length`. Only ndim=2.
+    length: lattice constant.
+    ndim: spatial dimensionality.
+  """
+  if lattice_type == 'square':
+    return length * np.eye(ndim)
+  if lattice_type == 'hexagonal':
+    if ndim != 2:
+      raise ValueError('hexagonal lattice is only defined for ndim=2')
+    # Two primitive vectors at 60 degrees, both of length `length`.
+    return length * np.array([[1.0, 0.5],
+                              [0.0, np.sqrt(3.0) / 2.0]])
+  raise ValueError(f'Unknown lattice_type: {lattice_type}')
 
 
 class SystemType(enum.IntEnum):
@@ -33,12 +56,45 @@ def default() -> ml_collections.ConfigDict:
   # wavefunction output.
   cfg = ml_collections.ConfigDict({
       'batch_size': 4096,  # batch size,
-      'short_range_repulsion_strength': 0.0,
-      'interaction_type': 'short_range',  # 'short_range' or 'inverse_cubic'
-      'interaction_strength': 1.0,  # C in C/(r+a)^3
-      'interaction_small_length_cutoff': 0.1,  # a in C/(r+a)^3
+      # 'auto' preserves existing scripts: a feature-layer lattice means PBC;
+      # otherwise use an open disk. Explicit choices are 'periodic' and 'disk'.
+      'geometry': 'auto',
+      'disk_radius': 10.0,
+      'interaction_type': 'inverse_cubic',  # or 'short_range' (Gaussian)
+      'short_range_width': 0.1,
+      'interaction_strength': 0.0,
+      'interaction_strength_training_set': None,  # list of λ values for multi-λ training
+      'interaction_small_length_cutoff': 0.1,
+      'interaction_truncation_limit': 5,
+      # Long-range tail correction for the 1/(r+r0)^3 pair interaction.
+      # When `interaction_tail_correction` is False (default) the explicit pair
+      # sum runs exactly as before. When True, the explicit sum is restricted to
+      # a sphere of radius `interaction_cutoff_radius` and the isotropic large-r
+      # remainder (weighted by the pair-correlation function g2(r), defaulting to
+      # a uniform g2=1) is added as a constant. An optional tabulated g2 can be
+      # supplied as an .npz path with arrays `r` and `g2`.
+      'interaction_tail_correction': False,
+      'interaction_cutoff_radius': None,
+      'interaction_tail_g2_path': None,
+      # Exact 2D Ewald summation for the 1/(r+a)^3 interaction. When
+      # `interaction_ewald` is False (default) nothing changes. When True, the
+      # electron-electron energy is evaluated by Ewald summation (exact for the
+      # periodic cell, no cutoff/tail error, valid for the rhombic HEX cell) and
+      # the minimum-image pair sum / tail correction are bypassed. Mutually
+      # exclusive with `interaction_tail_correction`. The remaining keys are
+      # convergence controls; the energy is independent of `interaction_ewald_eta`.
+      'interaction_ewald': False,
+      'interaction_ewald_eta': None,
+      'interaction_ewald_eta_scale': 1.0,
+      'interaction_ewald_real_shells': 3,
+      'interaction_ewald_recip_shells': 8,
       'barrier_sharpness': 1.,
-      'disk_radius': 10.,
+      # Lattice type for periodic boundary conditions. Used by helper
+      # `make_lattice` to construct the lattice matrix passed to the PBC
+      # feature layer / local energy. One of:
+      #   'square'    - standard square lattice (L * I_ndim).
+      #   'hexagonal' - 2D triangular real-space lattice (hexagonal BZ).
+      'lattice_type': 'square',
       # Config module used. Should be set in get_config function as either the
       # absolute module or relative to the configs subdirectory. Relative
       # imports must start with a '.' (e.g. .atom). Do *not* override on
@@ -66,6 +122,13 @@ def default() -> ml_collections.ConfigDict:
           # If greater than zero, scale (at which to clip local energy) in units
           # of the mean deviation from the mean.
           'clip_local_energy': 5.0,
+          # If true, clip local energies *within each lambda group* (center and
+          # mean-abs-deviation computed per lambda) instead of over the whole
+          # mixed-lambda batch. In multi-lambda ("gen") training the inter-group
+          # energy spread otherwise dominates the global clip window, disabling
+          # outlier control within each group. No effect for single-lambda runs.
+          # Requires clip_local_energy > 0.
+          'per_lambda_clip': False,
           # If true, center the clipping window around the median rather than
           # the mean. More "correct" for removing outliers, but also potentially
           # slow, especially with multihost training.
@@ -118,6 +181,13 @@ def default() -> ml_collections.ConfigDict:
       },
       'log': {
           'stats_frequency': 1,  # iterations between logging of stats
+          # Tripwire diagnostics: when True, every `tripwire_frequency`
+          # iterations write per-walker min pair distance, max |E_L|, and
+          # per-lambda mean energies to tripwires.csv, and emit a warning when
+          # walkers approach contact (rmin < 0.5) at lambda > 5. Cheap early
+          # detection of the "contact pocket" failure mode. Off by default.
+          'tripwires': False,
+          'tripwire_frequency': 100,
           'save_frequency': 10.0,  # minutes between saving network params
           # Path to save/restore network to/from. If falsy,
           # creates a timestamped directory in the working directory.
@@ -216,7 +286,7 @@ def default() -> ml_collections.ConfigDict:
           'blocks': 1,  # Number of blocks to split the MCMC sampling into
       },
       'network': {
-          'network_type': 'ferminet',  # One of 'ferminet' or 'psiformer'.
+          'network_type': 'psiformer',  # One of 'ferminet' or 'psiformer'.
           # If true, the network outputs complex numbers rather than real.
           'complex': False,
           # Config specific to original FermiNet architecture.
@@ -266,6 +336,15 @@ def default() -> ml_collections.ConfigDict:
               'mlp_hidden_dims': (256,),
               'use_layer_norm': True,
           },
+          # Lambda conditioning options for generative (multi-lambda) training.
+          'lambda_conditioning': {
+              # 'additive': x + tanh(Linear(p_lambda))
+              # 'film': gamma(p_lambda) * x + beta(p_lambda)
+              # 'none': no learned lambda conditioning (single-coupling model)
+              'mode': 'additive',
+              # If True, feed log(lambda) to the embedding MLP.
+              'log_scale_input': False,
+          },
           # Config common to all architectures.
           'determinants': 16,  # Number of determinants.
           'bias_orbitals': False,  # include bias in last layer to orbitals
@@ -295,12 +374,30 @@ def default() -> ml_collections.ConfigDict:
           # Boson head type: 'product' computes product of orbitals,
           # 'sum' computes sum of orbitals.
           'boson_head': 'product',
+          # FIX A: fixed (non-trainable) smooth-periodic two-body Jastrow
+          # prefactor log f_2 = log K_0(2 sqrt(lambda / rho(r~))), r~ the smooth
+          # periodic distance. Imposes the exact 2D-dipole short-range cusp so
+          # E_L is finite at contact; smooth everywhere (no min-image / matching
+          # seam), so the variational bound is respected. Uses the PBC lattice
+          # from make_feature_layer_kwargs['lattice']. Off by default (leaves
+          # every existing run unchanged).
+          'smooth_periodic_jastrow': False,
+          # Saturation length of the Jastrow as a fraction of the shortest
+          # lattice vector: rho(r) = R0 tanh(r/R0), R0 = frac * L_min. >= 1 is a
+          # gentle cap that preserves short-range asymptotics.
+          'smooth_periodic_jastrow_rmatch_frac': 1.0,
       },
       'observables': {
           's2': False,  # spin magnitude
           'density': False,  # density matrix
           'density_basis': 'def2-tzvpd',  # basis used for DM calculation
           'dipole': False,  # dipole moment
+          # Condensate fraction n(k=0) via the one-body density matrix.
+          # When True, at each step we compute psi(R')/psi(R) where R' is R
+          # with particle 0 displaced by s ~ Uniform(primitive cell). The
+          # bosonic OBDM gives n(k=0) = N * <psi(R')/psi(R)>. Requires a
+          # periodic lattice (cfg.network.make_feature_layer_kwargs.lattice).
+          'nk0': False,
       },
       'debug': {
           # Check optimizer state, parameters and loss and raise an exception if

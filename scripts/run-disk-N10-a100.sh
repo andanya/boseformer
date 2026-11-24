@@ -24,7 +24,12 @@ MONITOR_PID=$!
 nvidia-smi | head -3
 echo "GPU type: $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 
-"$@"
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+if [ "$#" -eq 0 ]; then
+  python scripts/bosef-10e-rep01.py
+else
+  "$@"
+fi
 EXIT_CODE=$?
 
 kill $MONITOR_PID 2>/dev/null

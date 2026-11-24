@@ -37,6 +37,10 @@ class AuxiliaryLossData:
     variance: mean variance over batch, and over all devices if inside a pmap.
     local_energy: local energy for each MCMC configuration.
     clipped_energy: local energy after clipping has been applied
+    kinetic_energy: mean local kinetic energy over batch and devices.
+    potential_energy: mean local potential energy over batch and devices.
+    local_kinetic: local kinetic energy for each MCMC configuration.
+    local_potential: local potential energy for each MCMC configuration.
     grad_local_energy: gradient of the local energy.
     local_energy_mat: for excited states, the local energy matrix.
     s_ij: Matrix of overlaps between wavefunctions.
@@ -46,6 +50,10 @@ class AuxiliaryLossData:
   variance: jax.Array
   local_energy: jax.Array
   clipped_energy: jax.Array
+  kinetic_energy: jax.Array | None = None
+  potential_energy: jax.Array | None = None
+  local_kinetic: jax.Array | None = None
+  local_potential: jax.Array | None = None
   grad_local_energy: jax.Array | None = None
   local_energy_mat: jax.Array | None = None
   s_ij: jax.Array | None = None
@@ -150,13 +158,57 @@ def clip_local_values(
   return diff_center, diff
 
 
+def _per_lambda_baseline(local_energies: jnp.ndarray,
+                         interaction_strengths: jnp.ndarray) -> jnp.ndarray:
+  """Computes per-λ baseline: each walker's baseline is the mean E_L of its λ group.
+
+  In multi-λ training, using a global baseline creates O(1) systematic residuals
+  proportional to the inter-λ energy spread.  Per-λ baselines remove this,
+  leaving only within-group statistical fluctuations.
+
+  Falls back to global baseline when all walkers share the same λ.
+  """
+  # For each walker, average E_L over walkers with the same λ.
+  # (n_walkers,) x (n_walkers,) -> (n_walkers, n_walkers) boolean mask
+  same_lambda = jnp.abs(interaction_strengths[:, None]
+                         - interaction_strengths[None, :]) < 1e-6
+  group_sizes = jnp.sum(same_lambda, axis=1)
+  group_sums = jnp.dot(same_lambda.astype(local_energies.dtype), local_energies)
+  return group_sums / group_sizes
+
+
+def _per_lambda_clip(local_energies: jnp.ndarray,
+                     interaction_strengths: jnp.ndarray,
+                     clip_scale: float) -> jnp.ndarray:
+  """Clips each walker's E_L to its own λ-group window [c - s*tv, c + s*tv].
+
+  The clip center c is the group mean and tv the group mean-absolute-deviation
+  from that mean, both computed over walkers sharing the walker's λ. In
+  multi-λ training a *global* window is set by the (huge) inter-group energy
+  spread, so it never clips genuine within-group outliers; clipping per group
+  restores real outlier control. For a single λ this reduces to the standard
+  (mean-centered) clip. Operates per device, matching `_per_lambda_baseline`.
+  """
+  same_lambda = jnp.abs(interaction_strengths[:, None]
+                        - interaction_strengths[None, :]) < 1e-6
+  mask = same_lambda.astype(local_energies.dtype)
+  group_sizes = jnp.sum(mask, axis=1)
+  center = jnp.dot(mask, local_energies) / group_sizes            # per group mean
+  abs_dev = jnp.abs(local_energies - center)
+  tv = jnp.dot(mask, abs_dev) / group_sizes                       # per group MAD
+  return jnp.clip(local_energies,
+                  center - clip_scale * tv,
+                  center + clip_scale * tv)
+
+
 def make_loss(network: networks.LogFermiNetLike,
               local_energy: hamiltonian.LocalEnergy,
               clip_local_energy: float = 0.0,
               clip_from_median: bool = True,
               center_at_clipped_energy: bool = True,
               complex_output: bool = False,
-              max_vmap_batch_size: int = 0) -> LossFn:
+              max_vmap_batch_size: int = 0,
+              per_lambda_clip: bool = False) -> LossFn:
   """Creates the loss function, including custom gradients.
 
   Args:
@@ -191,11 +243,12 @@ def make_loss(network: networks.LogFermiNetLike,
       in_axes=(
           None,
           0,
-          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0),
+          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0,
+                                interaction_strength=0),
       ),
-      out_axes=(0, 0)
+      out_axes=0
   )
-  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
 
   @jax.custom_jvp
   def total_energy(
@@ -221,16 +274,22 @@ def make_loss(network: networks.LogFermiNetLike,
       over the batch and over all devices inside a pmap.
     """
     keys = jax.random.split(key, num=data.positions.shape[0])
-    e_l, e_l_mat = batch_local_energy(params, keys, data)
+    e_l, e_aux = batch_local_energy(params, keys, data)
     loss = constants.pmean(jnp.mean(e_l))
     loss_diff = e_l - loss
     variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
+    kin_mean = constants.pmean(jnp.mean(e_aux.kinetic))
+    pot_mean = constants.pmean(jnp.mean(e_aux.potential))
     return loss, AuxiliaryLossData(
         energy=loss,
         variance=variance.real,
         local_energy=e_l,
         clipped_energy=e_l,
-        local_energy_mat=e_l_mat,
+        kinetic_energy=kin_mean.real,
+        potential_energy=pot_mean.real,
+        local_kinetic=e_aux.kinetic,
+        local_potential=e_aux.potential,
+        local_energy_mat=e_aux.energy_mat,
     )
 
   @total_energy.defjvp
@@ -239,7 +298,20 @@ def make_loss(network: networks.LogFermiNetLike,
     params, key, data = primals
     loss, aux_data = total_energy(params, key, data)
 
-    if clip_local_energy > 0.0:
+    data = primals[2]
+
+    if clip_local_energy > 0.0 and per_lambda_clip and not complex_output:
+      # Clip within each λ group (see _per_lambda_clip), then center each group
+      # at its own clipped mean so the per-group gradient stays unbiased. This
+      # is the multi-λ-correct counterpart of the global clip below.
+      clipped_el = _per_lambda_clip(
+          aux_data.local_energy, data.interaction_strength, clip_local_energy)
+      per_lambda_mean = _per_lambda_baseline(
+          clipped_el, data.interaction_strength)
+      aux_data.clipped_energy = constants.pmean(jnp.mean(clipped_el))
+      diff = clipped_el - per_lambda_mean
+    elif clip_local_energy > 0.0:
+      # Clip outliers using global statistics (appropriate for outlier removal)
       aux_data.clipped_energy, diff = clip_local_values(
           aux_data.local_energy,
           loss,
@@ -247,22 +319,32 @@ def make_loss(network: networks.LogFermiNetLike,
           clip_from_median,
           center_at_clipped_energy,
           complex_output)
+      # Re-center diff with per-λ baselines to reduce gradient variance
+      # in multi-λ training. Reconstruct clipped E_L, compute per-λ means,
+      # and subtract. In single-λ this is equivalent to the global baseline.
+      clipped_el = diff + aux_data.clipped_energy
+      per_lambda_mean = _per_lambda_baseline(
+          clipped_el, data.interaction_strength)
+      diff = clipped_el - per_lambda_mean
     else:
-      diff = aux_data.local_energy - loss
+      per_lambda_mean = _per_lambda_baseline(
+          aux_data.local_energy, data.interaction_strength)
+      diff = aux_data.local_energy - per_lambda_mean
 
     # Due to the simultaneous requirements of KFAC (calling convention must be
     # (params, rng, data)) and Laplacian calculation (only want to take
     # Laplacian wrt electron positions) we need to change up the calling
     # convention between total_energy and batch_network
-    data = primals[2]
     data_tangents = tangents[2]
-    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges)
+    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges,
+               data.interaction_strength)
     tangents = (
         tangents[0],
         data_tangents.positions,
         data_tangents.spins,
         data_tangents.atoms,
         data_tangents.charges,
+        data_tangents.interaction_strength,
     )
     psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
     if complex_output:
@@ -331,11 +413,12 @@ def make_wqmc_loss(
       in_axes=(
           None,
           0,
-          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0),
+          networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0,
+                                interaction_strength=0),
       ),
-      out_axes=(0, 0)
+      out_axes=0
   )
-  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
 
   @jax.custom_jvp
   def total_energy(
@@ -361,10 +444,12 @@ def make_wqmc_loss(
       over the batch and over all devices inside a pmap.
     """
     keys = jax.random.split(key, num=data.positions.shape[0])
-    e_l, e_l_mat = batch_local_energy(params, keys, data)
+    e_l, e_aux = batch_local_energy(params, keys, data)
     loss = constants.pmean(jnp.mean(e_l))
     loss_diff = e_l - loss
     variance = constants.pmean(jnp.mean(loss_diff * jnp.conj(loss_diff)))
+    kin_mean = constants.pmean(jnp.mean(e_aux.kinetic))
+    pot_mean = constants.pmean(jnp.mean(e_aux.potential))
 
     def batch_local_energy_pos(pos):
       network_data = networks.FermiNetData(
@@ -372,6 +457,7 @@ def make_wqmc_loss(
           spins=data.spins,
           atoms=data.atoms,
           charges=data.charges,
+          interaction_strength=data.interaction_strength,
       )
       return batch_local_energy(params, keys, network_data)[0].sum()
 
@@ -382,8 +468,12 @@ def make_wqmc_loss(
         variance=variance.real,
         local_energy=e_l,
         clipped_energy=e_l,
+        kinetic_energy=kin_mean.real,
+        potential_energy=pot_mean.real,
+        local_kinetic=e_aux.kinetic,
+        local_potential=e_aux.potential,
         grad_local_energy=grad_e_l,
-        local_energy_mat=e_l_mat,
+        local_energy_mat=e_aux.energy_mat,
     )
 
   @total_energy.defjvp
@@ -404,19 +494,22 @@ def make_wqmc_loss(
     else:
       diff = aux_data.local_energy - loss
 
-    def log_q(params_, pos_, spins_, atoms_, charges_):
-      out = batch_network(params_, pos_, spins_, atoms_, charges_)
+    def log_q(params_, pos_, spins_, atoms_, charges_, interaction_strength_):
+      out = batch_network(params_, pos_, spins_, atoms_, charges_,
+                          interaction_strength_)
       kfac_jax.register_normal_predictive_distribution(out[:, None])
       return out.sum()
 
     score = jax.grad(log_q, argnums=1)
-    primals = (params, data.positions, data.spins, data.atoms, data.charges)
+    primals = (params, data.positions, data.spins, data.atoms, data.charges,
+               data.interaction_strength)
     tangents = (
         tangents[0],
         tangents[2].positions,
         tangents[2].spins,
         tangents[2].atoms,
         tangents[2].charges,
+        tangents[2].interaction_strength,
     )
     score_primal, score_tangent = jax.jvp(score, primals, tangents)
 
@@ -484,10 +577,11 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
 
   vmap = jax.vmap if max_vmap_batch_size == 0 else functools.partial(
       folx.batched_vmap, max_batch_size=max_vmap_batch_size)
-  data_axes = networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0)
+  data_axes = networks.FermiNetData(positions=0, spins=0, atoms=0, charges=0,
+                                    interaction_strength=0)
   batch_local_energy = vmap(
-      local_energy, in_axes=(None, 0, data_axes), out_axes=(0, 0))
-  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+      local_energy, in_axes=(None, 0, data_axes), out_axes=0)
+  batch_network = vmap(network, in_axes=(None, 0, 0, 0, 0, 0), out_axes=0)
   overlap_weight = jnp.array(overlap_weight)
 
   # TODO(pfau): how much of this can be factored out with make_loss?
@@ -501,12 +595,14 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
 
     # Energy term. Largely similar to make_energy_loss, but simplified.
     keys = jax.random.split(key, num=data.positions.shape[0])
-    e_l, _ = batch_local_energy(params, keys, data)
+    e_l, e_aux = batch_local_energy(params, keys, data)
     loss = constants.pmean(jnp.mean(e_l, axis=0))
     loss_diff = e_l - loss
     variance = constants.pmean(
         jnp.mean(loss_diff * jnp.conj(loss_diff), axis=0))
     weighted_energy = jnp.dot(loss, overlap_weight)
+    kin_mean = constants.pmean(jnp.mean(e_aux.kinetic))
+    pot_mean = constants.pmean(jnp.mean(e_aux.potential))
 
     # Overlap matrix. To compute S_ij^2 = <psi_i psi_j>^2/<psi_i^2><psi_j^2>
     # by Monte Carlo, you can split up the terms into a product of MC estimates
@@ -520,7 +616,8 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
                                       data.positions,
                                       data.spins,
                                       data.atoms,
-                                      data.charges)
+                                      data.charges,
+                                      data.interaction_strength)
     sign_psi_diag = jax.vmap(jnp.diag)(sign_psi)[..., None]
     log_psi_diag = jax.vmap(jnp.diag)(log_psi)[..., None]
     s_ij_local = sign_psi * sign_psi_diag * jnp.exp(log_psi - log_psi_diag)
@@ -533,9 +630,13 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
                 variance=variance.real,
                 local_energy=e_l,
                 clipped_energy=loss,
+                kinetic_energy=kin_mean.real,
+                potential_energy=pot_mean.real,
+                local_kinetic=e_aux.kinetic,
+                local_potential=e_aux.potential,
                 s_ij=s_ij_local,
                 mean_s_ij=s_ij,
-                local_energy_mat=e_l))
+                local_energy_mat=e_aux.energy_mat))
 
   @total_energy_and_overlap.defjvp
   def total_energy_and_overlap_jvp(primals, tangents):  # pylint: disable=unused-variable
@@ -589,9 +690,11 @@ def make_energy_overlap_loss(network: networks.LogFermiNetLike,
     # convention between total_energy and batch_network
     data = primals[2]
     data_tangents = tangents[2]
-    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges)
+    primals = (primals[0], data.positions, data.spins, data.atoms, data.charges,
+               data.interaction_strength)
     tangents = (tangents[0], data_tangents.positions, data_tangents.spins,
-                data_tangents.atoms, data_tangents.charges)
+                data_tangents.atoms, data_tangents.charges,
+                data_tangents.interaction_strength)
 
     psi_primal, psi_tangent = jax.jvp(batch_network, primals, tangents)
     _, log_primal = psi_primal
