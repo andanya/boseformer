@@ -7,10 +7,9 @@
 #SBATCH --output=./andanya-psiformer-jobs/andanya-psiformer-job_%j.out
 #SBATCH --error=./andanya-psiformer-jobs/andanya-psiformer-job_%j.err
 
-module load CUDA
-module load cuDNN
 
-cd /home/da753/bosenet
+# Run uv sync --locked in the checkout before submitting this job.
+cd /home/da753/bosenet || exit 1
 
 while true; do
   echo "=== GPU MEM $(date '+%H:%M:%S') ==="
@@ -24,11 +23,10 @@ MONITOR_PID=$!
 nvidia-smi | head -3
 echo "GPU type: $(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)"
 
-export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 if [ "$#" -eq 0 ]; then
-  python scripts/bosef-10e-rep01.py
+  uv run --locked --no-sync python scripts/bosef-10e-rep01.py
 else
-  "$@"
+  uv run --locked --no-sync "$@"
 fi
 EXIT_CODE=$?
 

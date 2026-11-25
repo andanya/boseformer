@@ -9,7 +9,7 @@ Also records the condensate fraction n(k=0) (observables.nk0) and tripwire
 diagnostics per lambda.
 
 Usage:
-    PYTHONPATH=. python scripts/infer-dipole-pbc-hex-N25-pbc.py <interaction_strength> [iterations]
+    uv run --locked python scripts/infer-dipole-pbc-hex-N25-pbc.py <interaction_strength> [iterations]
 """
 import sys
 from pyscf import gto
@@ -25,7 +25,7 @@ import os
 
 
 if len(sys.argv) < 2:
-    print("Usage: PYTHONPATH=. python scripts/infer-dipole-pbc-hex-N25-pbc.py <interaction_strength> [iterations]")
+    print("Usage: uv run --locked python scripts/infer-dipole-pbc-hex-N25-pbc.py <interaction_strength> [iterations]")
     sys.exit(1)
 
 lam = float(sys.argv[1])

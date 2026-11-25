@@ -8,3 +8,8 @@ ferminet/.DS_Store
 bosef*
 dipole*
 andanya-psiformer-jobs
+
+# Local uv environments and package build outputs
+.venv/
+build/
+dist/

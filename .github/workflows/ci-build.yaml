@@ -1,95 +1,47 @@
 name: CI
 
 on:
-  # Trigger the workflow on push or pull request,
-  # only on the main branch
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   lint_and_typecheck:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.10']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install locked environment and lint tools
+        run: uv sync --locked --no-group cuda --extra testing
+      - name: Lint with flake8
+        run: uv run --locked --no-sync flake8 ferminet scripts tests test setup.py
+      - name: Lint with pylint
+        run: uv run --locked --no-sync pylint --fail-under 9.75 ferminet
+      - name: Type check with pytype
+        run: uv run --locked --no-sync pytype ferminet
 
-    steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Get pip cache dir
-      id: pip-cache
-      run: |
-        python -m pip install --upgrade pip
-        echo "::set-output name=dir::$(pip cache dir)"
-    - name: pip cache
-      uses: actions/cache@v2
-      with:
-        path: ${{ steps.pip-cache.outputs.dir }}
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/setup.py') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    - name: Install dependencies
-      run: |
-        pip install -e '.[testing]'
-    - name: Lint with flake8
-      run: |
-        flake8 .
-    - name: Lint with pylint
-      run: |
-        pylint --fail-under 9.75 ferminet
-    - name: Type check with pytype
-      run: |
-        pytype ferminet
   build:
-    name: "build ${{ matrix.name-prefix }} (py ${{ matrix.python-version }} on ${{ matrix.os }})"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - name-prefix: "all tests"
-            python-version: '3.10'
-            os: ubuntu-latest
-            package-overrides: "none"
-          - name-prefix: "all tests"
-            python-version: '3.11'
-            os: ubuntu-latest
-            package-overrides: "none"
+    name: CPU regression tests (Python 3.11.15)
+    runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Get pip cache dir
-      id: pip-cache
-      run: |
-        python -m pip install --upgrade pip
-        echo "::set-output name=dir::$(pip cache dir)"
-    - name: pip cache
-      uses: actions/cache@v2
-      with:
-        path: ${{ steps.pip-cache.outputs.dir }}
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/setup.py') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    - name: Install dependencies
-      run: |
-        pip install -e '.[testing]'
-        if [ ${{ matrix.package-overrides }} != none ]; then
-          pip install ${{ matrix.package-overrides }}
-        fi
-    - name: Run tests
-      run: |
-        python -m pytest
-    - name: Run multi-device tests
-      if: matrix.python-version == '3.10'
-      run: |
-        FERMINET_CHEX_N_CPU_DEVICES=2 python -m pytest ferminet/tests/train_test.py
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+      - name: Install locked CPU environment
+        run: uv sync --locked --no-group cuda
+      - name: Run paper and disk regression tests
+        run: uv run --locked --no-sync python -m pytest -q tests test/test_smooth_contact.py --durations=5

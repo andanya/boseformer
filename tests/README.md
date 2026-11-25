@@ -13,13 +13,13 @@ restore them for frozen inference, and reject incompatible config choices.
 
 ## CPU
 
-From the repository root, use the environment in
-`requirements-ferminet-jax.yml`.
+From the repository root, install the locked uv environment. The CPU command
+omits CUDA libraries; leave off `--no-group cuda` to install GPU support too.
 
 ```bash
-conda activate ferminet-jax
-PYTHONPATH=. JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  python -m pytest -q tests test/test_smooth_contact.py --durations=5
+uv sync --locked --no-group cuda
+JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  uv run --locked --no-group cuda python -m pytest -q tests test/test_smooth_contact.py --durations=5
 ```
 
 The CPU workflow uses four particles and 12 walkers per device. The
@@ -29,14 +29,16 @@ temporary directories.
 
 ## GPU
 
-Run from the repository root on an allocated NVIDIA GPU with the same Conda
-environment. The command runs just the two GPU cases and caps wall time at
-20 minutes, including JAX compilation.
+Run from the repository root on an allocated NVIDIA GPU with the uv
+environment including the default CUDA dependency group. The command runs
+just the two GPU cases and caps wall time at 20 minutes, including JAX
+compilation.
 
 ```bash
-PYTHONPATH=. JAX_PLATFORMS=cuda BOSENET_RUN_GPU_TESTS=1 \
+uv sync --locked
+JAX_PLATFORMS=cuda BOSENET_RUN_GPU_TESTS=1 \
   XLA_FLAGS=--xla_gpu_autotune_level=0 \
-  timeout --kill-after=30s 20m python -m pytest -q tests -k gpu --durations=5
+  timeout --kill-after=30s 20m uv run --locked --no-sync python -m pytest -q tests -k gpu --durations=5
 ```
 
 The GPU cases use the full 25-particle network for the forward check and

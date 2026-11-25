@@ -1,0 +1,63 @@
+BoseNet environment provenance
+
+The uv configuration is derived from the Python 3.11.15 environment recorded
+on 2026-11-24 for Linux x86_64. The original snapshot is preserved in Git at
+6652135:requirements-ferminet-jax.yml. That snapshot recorded BoseNet source
+https://github.com/andanya/bosenet at commit
+f9fa599386e85918012db862b7cb0b6b55658e9a (pbc-dipole-dipole-gen-tail).
+
+Active installation
+  pyproject.toml: exact Python dependency pins and Git source revisions.
+  uv.lock: resolved dependencies, source URLs, and artifact hashes.
+  .python-version: Python 3.11.15; uv supplies a standalone CPython build.
+  uv sync --locked installs this repository as an editable bosenet package.
+  Its import namespace remains ferminet, preserving the model's current API.
+  CUDA dependencies are included by default. CPU-only environments can use
+  uv sync --locked --no-group cuda (also pass --no-group cuda to uv run).
+
+Source revisions
+  folx: https://github.com/microsoft/folx
+    47a0e8d97a311686115aae353a85a45ae6432274
+  kfac-jax: https://github.com/google-deepmind/kfac-jax
+    e876b2bf19285b28f5127c931e48766743f8675d
+  JAX/JAXlib/CUDA plugin/PJRT: release 0.4.34
+    https://github.com/jax-ml/jax
+    jax-v0.4.34: affba367c5533df8900e32cbc3d31ca92dd1c1ea
+    JAXlib and CUDA plugin wheels embed that commit; JAX and PJRT carry the
+    release version. The pinned wheels preserve the original Python packages.
+
+Deliberate differences from the historical snapshot
+  Upstream ferminet 0.2 at b689f3fe6bb95a283b8b8d8e70bd56a86320488f from
+  https://github.com/google-deepmind/ferminet is not installed separately.
+  This repository supplies its modified ferminet package instead.
+
+  The old snapshot listed tensorflow-probability 0.25.0 and tfp-nightly
+  0.26.0.dev20260401, both owning the same import namespace. All 1537 hashed
+  tensorflow_probability files installed in the working environment match
+  stable 0.25.0; only 1098 match the nightly. Pinning stable 0.25.0 alone
+  reproduces the active code without an installation-order-dependent overlap.
+
+  The Python interpreter and system-library builds differ from the historical
+  environment manager; this is not a byte-identical operating-system image.
+  Python dependencies retain the snapshot versions, including setuptools
+  82.0.1, wheel 0.46.3, and packaging 26.0. Git-sourced build dependencies are
+  resolved separately by uv when building their pinned source revisions.
+
+GPU runtime
+  CUDA 12 user-space libraries and cuDNN are pinned in the cuda group.
+  The NVIDIA driver is supplied by the host. The historical N=25 bare
+  inference log recorded driver 580.159.04 (CUDA compatibility 13.0).
+  Cluster launchers retain their original partitions and numerical XLA flags.
+
+Other historical environments
+  An unrelated editable hallcrystalnet 0.1.0 installation at
+  /home/da753/hallcrystalnet, repository https://github.com/andanya/hallcrystalnet,
+  commit ecba3eaa2a0eb53bfb6ae828baeaa04f5f3b2ba5 with local edits, was excluded
+  from the original snapshot's install list and remains excluded here.
+  Local astra plotting code had separate Python 3.12 dependencies; those are
+  not part of the training environment. The historical snapshot in Git retains
+  their package list. Existing data and model checkpoints are not dependencies.
+
+The snapshot does not establish which versions were used for every earlier
+training job. Existing environments and model source are not modified by this
+migration; uv creates a separate project environment.
