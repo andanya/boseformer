@@ -19,8 +19,8 @@ The typical usage workflow and the results for two-dimensional bosons with dipol
 ## Environment setup
 
 ```bash
-git clone https://github.com/andanya/bosenet.git
-cd bosenet
+git clone https://github.com/andanya/boseformer.git
+cd boseformer
 uv sync --locked
 source .venv/bin/activate
 ```

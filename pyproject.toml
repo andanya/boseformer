@@ -152,7 +152,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/andanya/bosenet"
+Repository = "https://github.com/andanya/boseformer"
 
 [dependency-groups]
 # Included by default for the existing GPU workflows; CPU: --no-group cuda.
