@@ -19,6 +19,18 @@ inference workflows used by the scripts in this repository.
 - `test_smooth_contact.py`: derivatives of the smooth periodic dipolar Jastrow
   against an independent analytic calculation near particle contact, including
   cancellation of the leading kinetic and potential energy divergences.
+- `test_model_reference.py`: fixed parameter initialization, wavefunction values,
+  position gradients, and local energies for disk, square, and hexagonal models;
+  checkpoint restoration, resumed KFAC training, and inference.
+- `test_geometry.py`: cell wrapping and symmetries for both periodic geometries,
+  disk-center translation, invalid geometry rejection, and square-cell Gaussian
+  training with Adam.
+
+The fixtures in `tests/data/` contain CPU reference values and a 41 KB
+checkpoint for a four-particle test model after two KFAC steps. The reference
+JSON uses seed 23, four particles, one attention layer, and two product
+channels in the pinned float32 environment. Fixture source:
+`a87793730efe952fbe006753373fa5f0be1aef03`.
 
 ## CPU
 

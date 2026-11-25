@@ -11,21 +11,18 @@ diagnostics per lambda.
 Usage:
     uv run --locked python scripts/infer-dipole-pbc-hex-N25-pbc-ft2040.py <interaction_strength> [iterations]
 """
+
 import sys
-from pyscf import gto
 
-from ferminet import base_2DEG_config
-from ferminet import train2DEG
-from ferminet.utils import system
-
-from ferminet.pbc import envelopes
+from network import config
+from network import train
 
 import numpy as np
-import os
-
 
 if len(sys.argv) < 2:
-    print("Usage: uv run --locked python scripts/infer-dipole-pbc-hex-N25-pbc-ft2040.py <interaction_strength> [iterations]")
+    print(
+        "Usage: uv run --locked python scripts/infer-dipole-pbc-hex-N25-pbc-ft2040.py <interaction_strength> [iterations]"
+    )
     sys.exit(1)
 
 lam = float(sys.argv[1])
@@ -37,37 +34,16 @@ N_PARTICLES = 25
 #   L^2 * sqrt(3)/2 = N*pi  ->  L = sqrt(2*N*pi/sqrt(3))
 TORUS_LENGTH = np.sqrt(2 * N_PARTICLES * np.pi / np.sqrt(3))
 
-mol = gto.Mole()
-mol.build(
-    atom='H  0 0 0',
-    charge=1 - N_PARTICLES,
-    spin=N_PARTICLES,
-    basis='sto-3g', unit='bohr')
+cfg = config.default()
+cfg.n_particles = N_PARTICLES
 
-cfg = base_2DEG_config.default()
-cfg.system.pyscf_mol = mol
-cfg.pretrain.method = None
+cfg.geometry = "periodic"
+cfg.lattice = config.make_lattice("hexagonal", TORUS_LENGTH, ndim=2)
 
-cfg.lattice_type = 'hexagonal'
-lattice = base_2DEG_config.make_lattice(
-    cfg.lattice_type, TORUS_LENGTH, ndim=2)
-
-cfg.network.make_feature_layer_fn = (
-    "ferminet.pbc.feature_layer.make_pbc_feature_layer")
-cfg.network.make_feature_layer_kwargs = {
-    "lattice": lattice,
-    "include_r_ae": False
-}
-
-cfg.network.make_envelope_fn = (
-    "ferminet.envelopes.make_null_envelope")
-cfg.network.make_envelope_kwargs = {}
-cfg.network.full_det = True
 cfg.network.predict_logits = True
-cfg.network.network_type = 'psiformer'
 
 # --- Inference settings ---
-cfg.optim.optimizer = 'none'
+cfg.optim.optimizer = "none"
 cfg.optim.iterations = iters
 
 cfg.interaction_strength = lam
@@ -83,12 +59,12 @@ cfg.network.smooth_periodic_jastrow = True
 cfg.network.smooth_periodic_jastrow_rmatch_frac = 1.0
 
 # === Observables / diagnostics ===
-cfg.observables.nk0 = True          # condensate fraction n(k=0) order parameter
+cfg.observables.nk0 = True  # condensate fraction n(k=0) order parameter
 cfg.log.tripwires = True
 cfg.log.tripwire_frequency = 100
 
 # Restore from trained checkpoint, save to lambda-specific directory
-cfg.log.restore_path = './dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040'
-cfg.log.save_path = f'./dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040/lambda_{lam}'
+cfg.log.restore_path = "./dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040"
+cfg.log.save_path = f"./dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040/lambda_{lam}"
 
-train2DEG.train(cfg)
+train.train(cfg)

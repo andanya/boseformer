@@ -12,7 +12,7 @@ license = "Apache-2.0"
 authors = [{name = "Daniil Antonenko", email = "antonenko.daniel@gmail.com"}]
 
 # Python dependency versions from the recorded paper-run environment.
-# Source revisions and migration details: environment-provenance.txt.
+# Dependency provenance and source revisions: environment-provenance.txt.
 dependencies = [
   "absl-py==2.4.0",
   "anyio==4.13.0",
@@ -46,7 +46,6 @@ dependencies = [
   "fqdn==1.5.1",
   "gast==0.7.0",
   "h11==0.16.0",
-  "h5py==3.16.0",
   "httpcore==1.0.9",
   "httpx==0.28.1",
   "idna==3.11",
@@ -114,7 +113,6 @@ dependencies = [
   "pygments==2.20.0",
   "pyparsing==3.3.2",
   "pypdf==6.14.2",
-  "pyscf==2.12.1",
   "pytest==9.1.1",
   "python-dateutil==2.9.0.post0",
   "python-json-logger==4.1.0",
@@ -180,5 +178,5 @@ default-groups = ["cuda"]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.setuptools.packages.find]
-include = ["ferminet", "ferminet.*"]
+include = ["network", "network.*"]
 namespaces = false

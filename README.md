@@ -36,7 +36,25 @@ python scripts/infer-dipole-pbc-hex-N25-pbc-ft2040.py 30.0  # Inference with the
 python scripts/bosef-10e-rep01.py         # Disk, short-range Gaussian interaction (N=10).
 ```
 
-For short-range interactions, set `cfg.interaction_type = 'short_range'`; the disk script already uses this setting.
+The `network` package uses these config fields:
+
+| Field | Choices |
+| --- | --- |
+| `cfg.n_particles` | Number of bosons |
+| `cfg.geometry` | `'periodic'` or `'disk'` |
+| `cfg.lattice` | `config.make_lattice('hexagonal', L)` or `config.make_lattice('square', L)`; `None` for a disk |
+| `cfg.disk_radius`, `cfg.center` | Disk radius and coordinate origin |
+| `cfg.interaction_type` | `'inverse_cubic'` or `'short_range'` (Gaussian) |
+| `cfg.interaction_ewald` | Exact periodic dipolar summation |
+| `cfg.interaction_strength_training_set` | Couplings for conditional training; `None` for one coupling |
+| `cfg.interaction_strength` | Coupling for single-lambda training or inference |
+| `cfg.network.lambda_conditioning.mode` | `'additive'` (default), `'film'`, or `'none'` for an unconditioned model |
+| `cfg.network.products` | Number of generalized-orbital products |
+
+Geometry determines the input features and orbital envelope. The periodic
+paper scripts also enable `cfg.network.smooth_periodic_jastrow`; retain it
+when restoring their checkpoints. For a disk, disable Ewald and the periodic
+Jastrow, and set `cfg.lattice = None`.
 
 The training curves are saved to `train_stats.csv`
 The positions of Monte-Carlo walkers are saved to `walkers_last.host0.npy`.
