@@ -25,6 +25,10 @@ inference workflows used by the scripts in this repository.
 - `test_geometry.py`: cell wrapping and symmetries for both periodic geometries,
   disk-center translation, invalid geometry rejection, and square-cell Gaussian
   training with Adam.
+- `test_observables.py`: ideal-gas correlation normalization, periodic images,
+  crystal Bragg peaks, signed occupation ratios, sampling uncertainties,
+  Jastrow references, checkpoint loading, and CSV/plot output for all observable
+  and training-history commands.
 
 The fixtures in `tests/data/` contain CPU reference values and a 41 KB
 checkpoint for a four-particle test model after two KFAC steps. The reference

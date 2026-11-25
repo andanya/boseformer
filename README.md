@@ -56,8 +56,39 @@ paper scripts also enable `cfg.network.smooth_periodic_jastrow`; retain it
 when restoring their checkpoints. For a disk, disable Ewald and the periodic
 Jastrow, and set `cfg.lattice = None`.
 
-The training curves are saved to `train_stats.csv`
+The training curves are saved to `train_stats.csv`.
+
 The positions of Monte-Carlo walkers are saved to `walkers_last.host0.npy`.
+
+## Observables
+
+After the inference command above, compute a pair-correlation map from its latest checkpoint:
+
+```bash
+python observables/g2_map.py \
+  --checkpoint dipole-25e-pbc-gen-HEX-smoothperiodic-bare-ft2040/lambda_30.0 \
+  --config scripts/dipole-pbc-hex-N25-pbc-ft2040.py --lambda 30.0
+```
+
+Each script saves a CSV table and standalone PDF/PNG plots in `observable-results/` by default. See `--help` for sampling options; training-history scripts read `train_stats.csv`.
+
+| Script | Output |
+| --- | --- |
+| `g2_map.py` | Two-dimensional pair correlation $g_2(\mathbf{r})$, one figure per coupling. |
+| `bragg_peak.py` | Bragg peak height $S(\mathbf{k}_*)$ versus coupling or particle number. |
+| `zero_momentum_occupation.py` | Zero-momentum occupation $n(0)$ or fraction $n(0)/N$. |
+| `energy.py` | Total energy per particle versus coupling. |
+| `kinetic_energy.py` | Kinetic energy per particle versus coupling. |
+| `local_energy_variance.py` | Variance of individual local energies. |
+| `energy_relative_to_jastrow.py` | Relative energy difference against an optimized pure-Jastrow baseline. |
+| `variance_relative_to_jastrow.py` | Local-energy variance divided by the optimized pure-Jastrow variance. |
+| `potential_energy.py` | Potential energy per particle versus coupling. |
+| `structure_factor_map.py` | Reciprocal-space map $S(k_x,k_y)$. |
+| `training_convergence.py` | Training energy per particle versus optimization step. |
+| `training_variance.py` | Logged batch-mean energy variance versus optimization step. |
+| `structure_factor_radial.py` | Angle-averaged static structure factor $S(k)$. |
+| `feynman_bijl_dispersion.py` | Feynman–Bijl estimate of the collective-mode dispersion $\omega(k)$. |
+| `g2_radial.py` | Angle-averaged pair correlation $g_2(r)$. |
 
 ## License
 
