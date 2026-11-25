@@ -1,4 +1,4 @@
-"""BoseNet regression tests for the N=25 bare dipolar paper runs."""
+"""Boseformer regression tests for the N=25 bare dipolar paper runs."""
 
 import csv
 import os

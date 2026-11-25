@@ -12,3 +12,6 @@ andanya-psiformer-jobs
 .venv/
 build/
 dist/
+
+# Local presentation figures
+/presentation/

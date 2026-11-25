@@ -1,15 +1,24 @@
-# BoseNet refactoring checks
+# Boseformer tests
 
-These tests exercise the 25-particle bare dipolar runs in `scripts/`. They
-check the paper's training, fine-tuning, single-coupling reference, and
-inference configurations. The reduced-size runs use the actual KFAC and
-Metropolis updates, Ewald potential, and smooth periodic Jastrow. They check
-checkpoint restoration, the switch to a new coupling for inference, frozen
-weights, energy components, and the condensate estimator.
+The tests check model behaviour, numerical physics, and the training and
+inference workflows used by the scripts in this repository.
 
-The disk checks also verify the Gaussian pair potential and disk wall against
-analytic energies, train conditional and unconditioned models with KFAC,
-restore them for frozen inference, and reject incompatible config choices.
+## What the tests check
+
+- `test_paper_workflow.py`: the N=25 periodic dipolar configurations for
+  training, fine-tuning, single-coupling training, and inference. Short runs
+  exercise KFAC and Metropolis updates, checkpoint restoration, changing the
+  coupling for inference, frozen weights, energy components, and the
+  condensate estimator.
+- `test_periodic_physics.py`: the Ewald energy against an independent periodic
+  image sum, and the full N=25 network's particle-permutation invariance,
+  periodicity, and dependence on the interaction strength.
+- `test_disk_configs.py`: the Gaussian pair potential and disk wall against
+  analytic energies, conditional and unconditioned training, checkpoint-based
+  inference, and rejection of incompatible configuration settings.
+- `test_smooth_contact.py`: derivatives of the smooth periodic dipolar Jastrow
+  against an independent analytic calculation near particle contact, including
+  cancellation of the leading kinetic and potential energy divergences.
 
 ## CPU
 
@@ -19,13 +28,13 @@ omits CUDA libraries; leave off `--no-group cuda` to install GPU support too.
 ```bash
 uv sync --locked --no-group cuda
 JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  uv run --locked --no-group cuda python -m pytest -q tests test/test_smooth_contact.py --durations=5
+  uv run --locked --no-group cuda python -m pytest -q tests --durations=5
 ```
 
-The CPU workflow uses four particles and 12 walkers per device. The
-permutation, periodicity, and coupling-conditioning checks use the full
-25-particle forward pass. All checkpoints and outputs are generated in pytest
-temporary directories.
+The short CPU training runs use four particles and 12 walkers per device.
+The periodicity, permutation, and coupling-conditioning checks use the full
+25-particle forward pass. Checkpoints and outputs are written to pytest
+temporary directories. GPU tests are skipped unless explicitly enabled.
 
 ## GPU
 

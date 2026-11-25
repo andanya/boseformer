@@ -1,4 +1,4 @@
-"""Numerical checks for the bare hexagonal BoseNet model."""
+"""Numerical checks for the bare hexagonal Boseformer model."""
 
 import os
 

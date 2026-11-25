@@ -27,4 +27,4 @@ jobs:
       - name: Install locked CPU environment
         run: uv sync --locked --no-group cuda
       - name: Run paper and disk regression tests
-        run: uv run --locked --no-sync python -m pytest -q tests test/test_smooth_contact.py --durations=5
+        run: uv run --locked --no-sync python -m pytest -q tests --durations=5

@@ -4,6 +4,8 @@ Neural quantum states (NQS) for modeling interacting bosons
 
 **Author:** Daniil Antonenko (antonenko.daniel@gmail.com)
 
+Preprint: [D. S. Antonenko, L. Fu, L. I. Glazman, *"Parametric neural-network wavefunctions across a bosonic phase transition"*, arXiv:2611.33150](https://arxiv.org/pdf/2611.33150). 
+
 ## Overview
 
 Boseformer is a universal attention-based neural-network architecture for representing the wavefunctions of particles with bosonic quantum statistics, including superfluid and crystal phases. The model is trained to generate the wavefunction as a function of a Hamiltonian parameter across the quantum phase transition between these phases. Once trained with variational Monte Carlo optimization, it can serve as a foundation model describing the phase transition without the need to retrain it for individual parameter values.
