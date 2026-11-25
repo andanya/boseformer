@@ -62,7 +62,7 @@ The positions of Monte-Carlo walkers are saved to `walkers_last.host0.npy`.
 
 ## Observables
 
-After the inference command above, compute a pair-correlation map from its latest checkpoint:
+After inference (see above), compute an observable from the latest checkpoint. For example, to obtain the pair-correlation map $g_2(\mathbf{r})$, run:
 
 ```bash
 python observables/g2_map.py \
