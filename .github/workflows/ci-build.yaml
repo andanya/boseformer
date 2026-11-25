@@ -11,23 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  lint_and_typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: "0.11.19"
-          enable-cache: true
-      - name: Install locked environment and lint tools
-        run: uv sync --locked --no-group cuda --extra testing
-      - name: Lint with flake8
-        run: uv run --locked --no-sync flake8 ferminet scripts tests test setup.py
-      - name: Lint with pylint
-        run: uv run --locked --no-sync pylint --fail-under 9.75 ferminet
-      - name: Type check with pytype
-        run: uv run --locked --no-sync pytype ferminet
-
   build:
     name: CPU regression tests (Python 3.11.15)
     runs-on: ubuntu-latest

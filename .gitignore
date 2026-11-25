@@ -3,7 +3,6 @@
 *.csv
 *.npz
 .DS_Store
-ferminet/.DS_Store
 .ipynb_checkpoints/
 bosef*
 dipole*

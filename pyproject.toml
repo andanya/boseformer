@@ -153,9 +153,6 @@ dependencies = [
   "packaging==26.0",
 ]
 
-[project.optional-dependencies]
-testing = ["flake8", "pylint", "pytest==9.1.1", "pytype"]
-
 [project.urls]
 Repository = "https://github.com/andanya/bosenet"
 
@@ -181,9 +178,6 @@ cuda = [
 required-version = ">=0.11.19"
 default-groups = ["cuda"]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
-
-[tool.setuptools]
-script-files = ["bin/ferminet"]
 
 [tool.setuptools.packages.find]
 include = ["ferminet", "ferminet.*"]

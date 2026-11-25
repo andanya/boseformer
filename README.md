@@ -8,7 +8,7 @@ Neural quantum states (NQS) for modeling interacting bosons
 
 Boseformer is a universal attention-based neural-network architecture for representing the wavefunctions of particles with bosonic quantum statistics, including superfluid and crystal phases. The model is trained to generate the wavefunction as a function of a Hamiltonian parameter across the quantum phase transition between these phases. Once trained with variational Monte Carlo optimization, it can serve as a foundation model describing the phase transition without the need to retrain it for individual parameter values.
 
-The architecture uses a transformer backbone used in Psiformer ([https://github.com/google-deepmind/ferminet](https://github.com/google-deepmind/ferminet)). Bosonic heads account for bosonic quantum statistics (permutation invariance). 
+The architecture uses a transformer backbone used in Psiformer ([https://github.com/google-deepmind/ferminet](https://github.com/google-deepmind/ferminet)). Product heads account for bosonic quantum statistics (permutation invariance). 
 
 The typical usage workflow and the results for two-dimensional bosons with dipole-dipole ($1/r^3$) repulsion are shown in the figure below:
 
